@@ -1,4 +1,4 @@
-name: Build DeClang - Clean
+name: Build DeClang Correctly
 
 on: workflow_dispatch
 
@@ -21,29 +21,48 @@ jobs:
           build-essential \
           cmake \
           ninja-build \
-          git \
           python3 \
           libtinfo5 \
-          libncurses5
+          libncurses5 \
+          zlib1g-dev
           
     - name: Build
       run: |
-        echo "Building..."
-        cd llvm
-        mkdir build && cd build
+        echo "=== Building DeClang ==="
         
+        # Go to the actual source directory
+        # DeClang has llvm/ as a subdirectory with the actual source
+        cd llvm
+        
+        # Build from llvm/ directory
+        mkdir -p build && cd build
+        
+        # Correct CMake configuration
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
           -DLLVM_ENABLE_PROJECTS="clang" \
-          -DLLVM_TARGETS_TO_BUILD="AArch64" \
+          -DLLVM_TARGETS_TO_BUILD="AArch64;ARM" \
+          -DLLVM_DEFAULT_TARGET_TRIPLE="aarch64-linux-android21" \
+          -DLLVM_INCLUDE_TESTS=OFF \
+          -DLLVM_INCLUDE_EXAMPLES=OFF \
           -G "Ninja"
         
+        # Build clang
         ninja clang
         
     - name: Package
       run: |
+        echo "=== Packaging ==="
+        
         mkdir -p declang/bin
-        cp llvm/build/bin/clang declang/bin/
+        
+        # Copy from correct location
+        if [ -f "llvm/build/bin/clang" ]; then
+          cp llvm/build/bin/clang declang/bin/
+          
+          # Try to find clang++
+          find llvm/build -name "clang++" -type f -exec cp {} declang/bin/ \; 2>/dev/null || true
+        fi
         
         tar czf declang.tar.gz declang/
         
