@@ -1,0 +1,89 @@
+name: Build DeClang Manual
+
+on: workflow_dispatch
+
+jobs:
+  build-declang-manual:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: DeNA/DeClang
+        ref: Android-v1.0.0
+        fetch-depth: 0
+        submodules: recursive
+        
+    - name: Create Symlinks Manually
+      run: |
+        echo "=== Setting up symlinks ==="
+        
+        # Check what we have
+        echo "Available AntiHack directories:"
+        ls -d *AntiHack* 2>/dev/null || echo "None found"
+        
+        # Create symlinks like build.sh does
+        rm -f clang/lib/Driver/DeClangExtraProcess.cpp
+        rm -f llvm/lib/Transforms/AntiHack
+        rm -f llvm/include/llvm/Transforms/AntiHack
+        rm -f tools
+        
+        if [[ -e AntiHackDeNA ]]; then
+          echo "Using AntiHackDeNA..."
+          ln -s ../../../AntiHackDeNA/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
+          ln -s ../../../AntiHackDeNA/src llvm/lib/Transforms/AntiHack
+          ln -s ../../../../AntiHackDeNA/include llvm/include/llvm/Transforms/AntiHack
+          ln -s AntiHackDeNA/tools tools
+        elif [[ -e AntiHackOSS ]]; then
+          echo "Using AntiHackOSS..."
+          ln -s ../../../AntiHackOSS/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
+          ln -s ../../../AntiHackOSS/src llvm/lib/Transforms/AntiHack
+          ln -s ../../../../AntiHackOSS/include llvm/include/llvm/Transforms/AntiHack
+          ln -s AntiHackOSS/tools tools
+        else
+          echo "❌ No AntiHack directory found!"
+          exit 1
+        fi
+        
+    - name: Build
+      run: |
+        echo "=== Building ==="
+        
+        mkdir -p build
+        cd build
+        
+        # Use their exact CMake flags from build.sh
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLVM_ENABLE_PROJECTS=clang \
+          -DLLVM_ENABLE_DUMP=ON \
+          -G "Unix Makefiles" ../llvm
+        
+        # Build
+        make -j$(nproc)
+        
+    - name: Create Android Toolchain
+      run: |
+        echo "=== Creating Android Toolchain ==="
+        
+        # Check if tools/android_release.sh exists
+        if [ -f "tools/android_release.sh" ]; then
+          cd tools
+          bash android_release.sh "github-actions-build"
+        else
+          # Manual package
+          mkdir -p declang-android/bin
+          cp build/bin/clang declang-android/bin/
+          cp build/bin/clang++ declang-android/bin/ 2>/dev/null || true
+          
+          tar czf declang-android.tar.gz declang-android/
+        fi
+        
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: declang-manual
+        path: |
+          declang-android.tar.gz
+          Release-*/ 2>/dev/null || echo ""
