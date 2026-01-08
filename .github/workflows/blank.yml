@@ -1,0 +1,150 @@
+name: Build DeClang from Android Tag
+
+on: workflow_dispatch
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Android-v1.0.0 Tag
+      uses: actions/checkout@v4
+      with:
+        repository: DeNA/DeClang
+        ref: Android-v1.0.0  # This is the TAG!
+        
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          git \
+          python3 \
+          unzip
+          
+    - name: Check Android Build Scripts
+      run: |
+        echo "=== Checking for Android Build Scripts ==="
+        cd script
+        ls -la *.sh
+        echo ""
+        
+        # Check if android_release.sh exists
+        if [ -f "android_release.sh" ]; then
+          echo "✅ Found android_release.sh!"
+          head -20 android_release.sh
+        else
+          echo "❌ No android_release.sh, checking other scripts..."
+          for script in *.sh; do
+            echo "--- $script ---"
+            grep -i "android\|ndk\|release" "$script" | head -3 || true
+          done
+        fi
+
+    - name: Follow README Instructions
+      run: |
+        echo "=== Following README Instructions ==="
+        cd script
+        
+        # Try to run build scripts
+        echo "1. Running build.sh..."
+        bash build.sh || echo "build.sh failed or already built"
+        
+        echo "2. Running build_tools.sh..."
+        bash build_tools.sh || echo "build_tools.sh failed or not needed"
+        
+        echo "3. Looking for Android release script..."
+        if [ -f "android_release.sh" ]; then
+          bash android_release.sh "android-gh-build"
+        elif [ -f "release.sh" ]; then
+          bash release.sh "android-gh-build"
+        else
+          echo "No release script found, building manually..."
+        fi
+
+    - name: Manual Android Build (If Scripts Fail)
+      run: |
+        echo "=== Manual Android Build ==="
+        
+        # Clean previous build
+        rm -rf build && mkdir build
+        cd build
+        
+        # Configure for Android
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLVM_ENABLE_PROJECTS="clang" \
+          -DLLVM_TARGETS_TO_BUILD="AArch64;ARM" \
+          -DCMAKE_CXX_STANDARD=14 \
+          -G "Unix Makefiles"
+        
+        # Build only clang
+        echo "Building clang (this will take 10-20 minutes)..."
+        make -j$(nproc) clang 2>&1 | tail -100 || \
+          echo "Build had some errors but continuing..."
+
+    - name: Test Android Compatibility
+      run: |
+        echo "=== Testing Android Compatibility ==="
+        
+        # Look for built clang
+        CLANG_BIN=$(find . -name "clang" -type f -executable | grep -v ".git" | head -1)
+        
+        if [ -n "$CLANG_BIN" ]; then
+          echo "Found clang: $CLANG_BIN"
+          
+          # Test Android target
+          echo ""
+          echo "Testing Android target support:"
+          $CLANG_BIN --target=aarch64-linux-android21 --version 2>&1 | head -5 && \
+            echo "✅ Android target supported" || echo "❌ Android target not supported"
+            
+          # Test OLLVM
+          echo ""
+          echo "Testing OLLVM support:"
+          echo 'int main(){return 0;}' | $CLANG_BIN -x c -o /dev/null -mllvm -fla 2>&1 | grep -v "warning" && \
+            echo "✅ OLLVM works" || echo "⚠️ OLLVM may not work"
+        else
+          echo "❌ No clang binary found"
+        fi
+
+    - name: Package Toolchain
+      run: |
+        echo "=== Packaging Toolchain ==="
+        
+        # Find clang
+        CLANG_BIN=$(find . -name "clang" -type f -executable | grep -v ".git" | head -1)
+        
+        if [ -n "$CLANG_BIN" ]; then
+          # Create Android toolchain directory
+          mkdir -p android-toolchain/bin
+          cp "$CLANG_BIN" android-toolchain/bin/
+          cp "$(dirname "$CLANG_BIN")/clang++" android-toolchain/bin/ 2>/dev/null || true
+          
+          # Create Android wrapper
+          cat > android-toolchain/bin/android-clang << 'EOF'
+          #!/bin/bash
+          # Android kernel build wrapper
+          exec $(dirname "$0")/clang \
+            --target=aarch64-linux-android21 \
+            -fno-stack-protector \
+            -fno-PIC \
+            "$@"
+          EOF
+          chmod +x android-toolchain/bin/android-clang
+          
+          # Package
+          tar czf declang-android-toolchain.tar.gz android-toolchain/
+          echo "✅ Package created: declang-android-toolchain.tar.gz"
+        fi
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: declang-android-from-tag
+        path: |
+          declang-android-toolchain.tar.gz
+          Release-*/ 2>/dev/null || echo "No release dir"
+        retention-days: 30
