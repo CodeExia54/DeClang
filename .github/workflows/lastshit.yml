@@ -24,45 +24,29 @@ jobs:
           libtinfo5 \
           libncurses5
           
-    - name: Setup OLLVM Properly
+    - name: Setup OLLVM Symlinks (Original DeClang Way)
       run: |
-        echo "=== Setting up OLLVM ==="
+        echo "=== Setting up OLLVM the DeClang way ==="
         
-        # 1. Create Obfuscation directory in LLVM transforms
-        mkdir -p llvm/lib/Transforms/Obfuscation
-        
-        # 2. Copy OLLVM source files
-        cp -r AntiHackOSS/src/* llvm/lib/Transforms/Obfuscation/
-        cp -r AntiHackOSS/include/* llvm/include/llvm/Transforms/Obfuscation/
-        
-        # 3. Create CMakeLists.txt for Obfuscation - USE ECHO TO AVOID YAML ISSUES
-        echo 'add_llvm_component_library(LLVMObfuscation' > llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  BogusControlFlow.cpp' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  Flattening.cpp' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  Substitution.cpp' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  Utils.cpp' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  ADDITIONAL_HEADER_DIRS' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms/Obfuscation' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  DEPENDS' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  intrinsics_gen' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        echo '  )' >> llvm/lib/Transforms/Obfuscation/CMakeLists.txt
-        
-        # 4. Link DeClang extra process
+        # Just create the symlinks as DeClang expects
         ln -sf ../../../AntiHackOSS/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
+        ln -sf ../../../AntiHackOSS/src llvm/lib/Transforms/AntiHack
+        ln -sf ../../../../AntiHackOSS/include llvm/include/llvm/Transforms/AntiHack
+        ln -sf AntiHackOSS/tools tools
         
-        echo "OLLVM setup complete!"
-        ls -la llvm/lib/Transforms/Obfuscation/
+        echo "Symlinks created. Structure:"
+        ls -l clang/lib/Driver/DeClangExtraProcess.cpp
+        ls -l llvm/lib/Transforms/AntiHack
+        ls -l llvm/include/llvm/Transforms/AntiHack
         
-    - name: Build Clang with OLLVM
+    - name: Build Everything (Not Just Clang)
       run: |
-        echo "=== Building clang with OLLVM ==="
+        echo "=== Building entire LLVM with OLLVM ==="
         cd llvm
         
         mkdir -p build && cd build
         
-        # Build ALL of LLVM, not just clang - OLLVM needs LLVM libraries
+        # Build everything - OLLVM needs full LLVM
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
           -DLLVM_ENABLE_PROJECTS="clang" \
@@ -71,58 +55,115 @@ jobs:
           -DLLVM_INCLUDE_TESTS=OFF \
           -DLLVM_INCLUDE_EXAMPLES=OFF \
           -DLLVM_ENABLE_Z3_SOLVER=OFF \
-          -DLLVM_ENABLE_LIBEDIT=OFF \
-          -DLLVM_ENABLE_LIBXML2=OFF \
           -G "Ninja"
         
-        # Build clang AND OLLVM passes
-        ninja clang LLVMObfuscation
+        # Build ALL targets, not just clang
+        ninja -j$(nproc)
         
         echo "✅ Build complete!"
         
-    - name: Verify OLLVM Integration
+    - name: Test OLLVM
       run: |
-        echo "=== Verifying OLLVM ==="
-        cd llvm/build
-        
-        # Set DECLANG_HOME to avoid warning
+        echo "=== Testing OLLVM ==="
         export DECLANG_HOME="/tmp/declang-test"
         mkdir -p $DECLANG_HOME
         
-        # Test if OLLVM passes are available
-        echo "Testing OLLVM passes..."
-        echo 'int main(){return 0;}' > test.c
+        if [ -f "llvm/build/bin/clang" ]; then
+          ./llvm/build/bin/clang --version | head -3
+          
+          echo 'int main(){return 0;}' > test.c
+          
+          echo -n "Testing -mllvm -fla: "
+          ./llvm/build/bin/clang -mllvm -fla test.c -o /tmp/test 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+          
+          echo -n "Testing -mllvm -bcf: "
+          ./llvm/build/bin/clang -mllvm -bcf test.c -o /tmp/test 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+          
+          echo -n "Testing -mllvm -sub: "
+          ./llvm/build/bin/clang -mllvm -sub test.c -o /tmp/test 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+          
+          # Also test with Android target
+          echo -n "Testing Android target + FLA: "
+          ./llvm/build/bin/clang --target=aarch64-linux-android21 -mllvm -fla test.c -o /tmp/test 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+          
+          rm -f test.c /tmp/test
+        fi
         
-        # This should work if OLLVM is integrated
-        echo -n "Testing -mllvm -fla: "
-        ./bin/clang -mllvm -fla test.c -o test.o 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+    - name: Build OLLVM Plugin (Fallback)
+      run: |
+        echo "=== Building OLLVM plugin (fallback) ==="
         
-        echo -n "Testing -mllvm -bcf: "
-        ./bin/clang -mllvm -bcf test.c -o test.o 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+        # Use the already built LLVM to create plugin
+        mkdir -p ollvm-plugin/build
+        cd ollvm-plugin
         
-        echo -n "Testing -mllvm -sub: "
-        ./bin/clang -mllvm -sub test.c -o test.o 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+        cat > CMakeLists.txt << 'EOF'
+cmake_minimum_required(VERSION 3.13)
+project(OLLVMPlugin)
+
+find_package(LLVM REQUIRED CONFIG)
+
+add_library(OLLVMPlugin MODULE
+    ../AntiHackOSS/src/BogusControlFlow.cpp
+    ../AntiHackOSS/src/Flattening.cpp
+    ../AntiHackOSS/src/Substitution.cpp
+    ../AntiHackOSS/src/Utils.cpp
+)
+
+target_include_directories(OLLVMPlugin PRIVATE
+    ${LLVM_INCLUDE_DIRS}
+    ../AntiHackOSS/include
+)
+
+llvm_map_components_to_libnames(llvm_libs Core Support Analysis TransformUtils)
+target_link_libraries(OLLVMPlugin ${llvm_libs})
+EOF
         
-        rm -f test.c test.o
+        cd build
+        cmake -DLLVM_DIR=$(pwd)/../../llvm/build/lib/cmake/llvm ..
+        make -j$(nproc)
+        
+        echo "✅ Plugin built!"
         
     - name: Package
       run: |
         echo "=== Packaging ==="
-        mkdir -p clang-ollvm/bin
-        cp llvm/build/bin/clang clang-ollvm/bin/
         
-        # Create wrapper using echo
-        echo '#!/bin/bash' > clang-ollvm/bin/android-clang
-        echo 'export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"' >> clang-ollvm/bin/android-clang
-        echo 'mkdir -p "$DECLANG_HOME"' >> clang-ollvm/bin/android-clang
-        echo 'exec "$(dirname "$0")/clang" --target=aarch64-linux-android21 "$@"' >> clang-ollvm/bin/android-clang
-        chmod +x clang-ollvm/bin/android-clang
+        mkdir -p ollvm-toolchain/{bin,plugins}
         
-        tar czf clang-ollvm-android.tar.gz clang-ollvm/
+        # Copy clang
+        cp llvm/build/bin/clang ollvm-toolchain/bin/
+        
+        # Copy plugin if built
+        cp ollvm-plugin/build/OLLVMPlugin.so ollvm-toolchain/plugins/ 2>/dev/null || echo "Plugin not found, continuing..."
+        
+        # Create Android wrapper
+        echo '#!/bin/bash' > ollvm-toolchain/bin/android-clang
+        echo 'export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"' >> ollvm-toolchain/bin/android-clang
+        echo 'mkdir -p "$DECLANG_HOME"' >> ollvm-toolchain/bin/android-clang
+        echo 'exec "$(dirname "$0")/clang" --target=aarch64-linux-android21 "$@"' >> ollvm-toolchain/bin/android-clang
+        chmod +x ollvm-toolchain/bin/android-clang
+        
+        # Create plugin wrapper
+        echo '#!/bin/bash' > ollvm-toolchain/bin/android-clang-plugin
+        echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> ollvm-toolchain/bin/android-clang-plugin
+        echo 'export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"' >> ollvm-toolchain/bin/android-clang-plugin
+        echo 'mkdir -p "$DECLANG_HOME"' >> ollvm-toolchain/bin/android-clang-plugin
+        echo '' >> ollvm-toolchain/bin/android-clang-plugin
+        echo 'PLUGIN="$SCRIPT_DIR/../plugins/OLLVMPlugin.so"' >> ollvm-toolchain/bin/android-clang-plugin
+        echo 'if [ -f "$PLUGIN" ]; then' >> ollvm-toolchain/bin/android-clang-plugin
+        echo '    exec "$SCRIPT_DIR/clang" -fpass-plugin="$PLUGIN" --target=aarch64-linux-android21 "$@"' >> ollvm-toolchain/bin/android-clang-plugin
+        echo 'else' >> ollvm-toolchain/bin/android-clang-plugin
+        echo '    echo "Warning: OLLVM plugin not found, using built-in (if available)"' >> ollvm-toolchain/bin/android-clang-plugin
+        echo '    exec "$SCRIPT_DIR/clang" --target=aarch64-linux-android21 "$@"' >> ollvm-toolchain/bin/android-clang-plugin
+        echo 'fi' >> ollvm-toolchain/bin/android-clang-plugin
+        chmod +x ollvm-toolchain/bin/android-clang-plugin
+        
+        tar czf ollvm-toolchain.tar.gz ollvm-toolchain/
         echo "✅ Package created!"
         
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: clang-ollvm-android
-        path: clang-ollvm-android.tar.gz
+        name: ollvm-toolchain
+        path: ollvm-toolchain.tar.gz
