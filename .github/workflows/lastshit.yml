@@ -1,9 +1,9 @@
-name: Build Clang with OLLVM for Android Fix
+name: Build DeClang Android Toolchain (Official Way)
 
 on: workflow_dispatch
 
 jobs:
-  build-clang:
+  build-declang:
     runs-on: ubuntu-22.04
     
     steps:
@@ -22,148 +22,119 @@ jobs:
           ninja-build \
           python3 \
           libtinfo5 \
-          libncurses5
+          libncurses5 \
+          build-essential \
+          git \
+          unzip \
+          wget
           
-    - name: Setup OLLVM Symlinks (Original DeClang Way)
+    - name: Run Official Build Scripts
       run: |
-        echo "=== Setting up OLLVM the DeClang way ==="
+        echo "=== Running official DeClang build scripts ==="
+        cd script
         
-        # Just create the symlinks as DeClang expects
-        ln -sf ../../../AntiHackOSS/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
-        ln -sf ../../../AntiHackOSS/src llvm/lib/Transforms/AntiHack
-        ln -sf ../../../../AntiHackOSS/include llvm/include/llvm/Transforms/AntiHack
-        ln -sf AntiHackOSS/tools tools
+        echo "1. Running build.sh..."
+        bash build.sh
         
-        echo "Symlinks created. Structure:"
-        ls -l clang/lib/Driver/DeClangExtraProcess.cpp
-        ls -l llvm/lib/Transforms/AntiHack
-        ls -l llvm/include/llvm/Transforms/AntiHack
+        echo "2. Running build_tools.sh..."
+        bash build_tools.sh
         
-    - name: Build Everything (Not Just Clang)
-      run: |
-        echo "=== Building entire LLVM with OLLVM ==="
-        cd llvm
+        echo "3. Running android_release.sh..."
+        bash android_release.sh v1.0.0
         
-        mkdir -p build && cd build
-        
-        # Build everything - OLLVM needs full LLVM
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DLLVM_ENABLE_PROJECTS="clang" \
-          -DLLVM_TARGETS_TO_BUILD="AArch64" \
-          -DLLVM_DEFAULT_TARGET_TRIPLE="aarch64-linux-android21" \
-          -DLLVM_INCLUDE_TESTS=OFF \
-          -DLLVM_INCLUDE_EXAMPLES=OFF \
-          -DLLVM_ENABLE_Z3_SOLVER=OFF \
-          -G "Ninja"
-        
-        # Build ALL targets, not just clang
-        ninja -j$(nproc)
-        
-        echo "✅ Build complete!"
+        echo "✅ Official DeClang build complete!"
         
     - name: Test OLLVM
       run: |
-        echo "=== Testing OLLVM ==="
-        export DECLANG_HOME="/tmp/declang-test"
-        mkdir -p $DECLANG_HOME
+        echo "=== Testing built DeClang ==="
         
-        if [ -f "llvm/build/bin/clang" ]; then
-          ./llvm/build/bin/clang --version | head -3
+        # Check if release was created
+        if [ -d "../Release-v1.0.0" ]; then
+          cd ../Release-v1.0.0
+          
+          # Set DECLANG_HOME for testing
+          export DECLANG_HOME="/tmp/declang-test"
+          mkdir -p $DECLANG_HOME
+          
+          echo "Testing clang from Release-v1.0.0:"
+          ./bin/clang --version | head -5
           
           echo 'int main(){return 0;}' > test.c
           
           echo -n "Testing -mllvm -fla: "
-          ./llvm/build/bin/clang -mllvm -fla test.c -o /tmp/test 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+          ./bin/clang test.c -o test -mllvm -fla 2>&1 | grep -i "error\|unknown" || echo "✅ works"
           
           echo -n "Testing -mllvm -bcf: "
-          ./llvm/build/bin/clang -mllvm -bcf test.c -o /tmp/test 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+          ./bin/clang test.c -o test -mllvm -bcf 2>&1 | grep -i "error\|unknown" || echo "✅ works"
           
           echo -n "Testing -mllvm -sub: "
-          ./llvm/build/bin/clang -mllvm -sub test.c -o /tmp/test 2>&1 | grep -i "error\|unknown" || echo "✅ works"
+          ./bin/clang test.c -o test -mllvm -sub 2>&1 | grep -i "error\|unknown" || echo "✅ works"
           
-          # Also test with Android target
-          echo -n "Testing Android target + FLA: "
-          ./llvm/build/bin/clang --target=aarch64-linux-android21 -mllvm -fla test.c -o /tmp/test 2>&1 | grep -i "error\|unknown" || echo "✅ works"
-          
-          rm -f test.c /tmp/test
+          rm -f test.c test
+        else
+          echo "❌ Release-v1.0.0 directory not found!"
         fi
         
-    - name: Build OLLVM Plugin (Fallback)
+    - name: Create Package
       run: |
-        echo "=== Building OLLVM plugin (fallback) ==="
+        echo "=== Creating package ==="
         
-        # Use the already built LLVM to create plugin
-        mkdir -p ollvm-plugin/build
-        cd ollvm-plugin
-        
-        cat > CMakeLists.txt << 'EOF'
-cmake_minimum_required(VERSION 3.13)
-project(OLLVMPlugin)
-
-find_package(LLVM REQUIRED CONFIG)
-
-add_library(OLLVMPlugin MODULE
-    ../AntiHackOSS/src/BogusControlFlow.cpp
-    ../AntiHackOSS/src/Flattening.cpp
-    ../AntiHackOSS/src/Substitution.cpp
-    ../AntiHackOSS/src/Utils.cpp
-)
-
-target_include_directories(OLLVMPlugin PRIVATE
-    ${LLVM_INCLUDE_DIRS}
-    ../AntiHackOSS/include
-)
-
-llvm_map_components_to_libnames(llvm_libs Core Support Analysis TransformUtils)
-target_link_libraries(OLLVMPlugin ${llvm_libs})
-EOF
-        
-        cd build
-        cmake -DLLVM_DIR=$(pwd)/../../llvm/build/lib/cmake/llvm ..
-        make -j$(nproc)
-        
-        echo "✅ Plugin built!"
-        
-    - name: Package
-      run: |
-        echo "=== Packaging ==="
-        
-        mkdir -p ollvm-toolchain/{bin,plugins}
-        
-        # Copy clang
-        cp llvm/build/bin/clang ollvm-toolchain/bin/
-        
-        # Copy plugin if built
-        cp ollvm-plugin/build/OLLVMPlugin.so ollvm-toolchain/plugins/ 2>/dev/null || echo "Plugin not found, continuing..."
-        
-        # Create Android wrapper
-        echo '#!/bin/bash' > ollvm-toolchain/bin/android-clang
-        echo 'export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"' >> ollvm-toolchain/bin/android-clang
-        echo 'mkdir -p "$DECLANG_HOME"' >> ollvm-toolchain/bin/android-clang
-        echo 'exec "$(dirname "$0")/clang" --target=aarch64-linux-android21 "$@"' >> ollvm-toolchain/bin/android-clang
-        chmod +x ollvm-toolchain/bin/android-clang
-        
-        # Create plugin wrapper
-        echo '#!/bin/bash' > ollvm-toolchain/bin/android-clang-plugin
-        echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> ollvm-toolchain/bin/android-clang-plugin
-        echo 'export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"' >> ollvm-toolchain/bin/android-clang-plugin
-        echo 'mkdir -p "$DECLANG_HOME"' >> ollvm-toolchain/bin/android-clang-plugin
-        echo '' >> ollvm-toolchain/bin/android-clang-plugin
-        echo 'PLUGIN="$SCRIPT_DIR/../plugins/OLLVMPlugin.so"' >> ollvm-toolchain/bin/android-clang-plugin
-        echo 'if [ -f "$PLUGIN" ]; then' >> ollvm-toolchain/bin/android-clang-plugin
-        echo '    exec "$SCRIPT_DIR/clang" -fpass-plugin="$PLUGIN" --target=aarch64-linux-android21 "$@"' >> ollvm-toolchain/bin/android-clang-plugin
-        echo 'else' >> ollvm-toolchain/bin/android-clang-plugin
-        echo '    echo "Warning: OLLVM plugin not found, using built-in (if available)"' >> ollvm-toolchain/bin/android-clang-plugin
-        echo '    exec "$SCRIPT_DIR/clang" --target=aarch64-linux-android21 "$@"' >> ollvm-toolchain/bin/android-clang-plugin
-        echo 'fi' >> ollvm-toolchain/bin/android-clang-plugin
-        chmod +x ollvm-toolchain/bin/android-clang-plugin
-        
-        tar czf ollvm-toolchain.tar.gz ollvm-toolchain/
-        echo "✅ Package created!"
+        if [ -d "Release-v1.0.0" ]; then
+          # Create minimal package
+          mkdir -p declang-android
+          cp -r Release-v1.0.0/* declang-android/
+          
+          # Add setup script as per README
+          echo '#!/bin/bash' > declang-android/setup.sh
+          echo '# DeClang Setup Script' >> declang-android/setup.sh
+          echo '' >> declang-android/setup.sh
+          echo 'echo "========================================"' >> declang-android/setup.sh
+          echo 'echo "DeClang Android Toolchain Setup"' >> declang-android/setup.sh
+          echo 'echo "========================================"' >> declang-android/setup.sh
+          echo '' >> declang-android/setup.sh
+          echo '# Set DECLANG_HOME as per README' >> declang-android/setup.sh
+          echo 'export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"' >> declang-android/setup.sh
+          echo 'mkdir -p "$DECLANG_HOME"' >> declang-android/setup.sh
+          echo '' >> declang-android/setup.sh
+          echo '# Copy release to DECLANG_HOME' >> declang-android/setup.sh
+          echo 'if [ "$(pwd)" != "$DECLANG_HOME/.DeClang" ]; then' >> declang-android/setup.sh
+          echo '    echo "Copying DeClang to $DECLANG_HOME/.DeClang..."' >> declang-android/setup.sh
+          echo '    cp -r . "$DECLANG_HOME/.DeClang/"' >> declang-android/setup.sh
+          echo 'fi' >> declang-android/setup.sh
+          echo '' >> declang-android/setup.sh
+          echo '# Add to PATH' >> declang-android/setup.sh
+          echo 'export PATH="$DECLANG_HOME/.DeClang/bin:$PATH"' >> declang-android/setup.sh
+          echo '' >> declang-android/setup.sh
+          echo 'echo ""' >> declang-android/setup.sh
+          echo 'echo "Usage:"' >> declang-android/setup.sh
+          echo 'echo "  export DECLANG_HOME=\"\$HOME/.DeClang\""' >> declang-android/setup.sh
+          echo 'echo "  export PATH=\"\$DECLANG_HOME/.DeClang/bin:\$PATH\""' >> declang-android/setup.sh
+          echo 'echo "  clang --version"' >> declang-android/setup.sh
+          echo 'echo ""' >> declang-android/setup.sh
+          echo 'echo "For Android kernel modules:"' >> declang-android/setup.sh
+          echo 'echo "  clang --target=aarch64-linux-android21 -mllvm -fla file.c"' >> declang-android/setup.sh
+          echo 'echo "========================================"' >> declang-android/setup.sh
+          
+          chmod +x declang-android/setup.sh
+          
+          # Create Android wrapper
+          echo '#!/bin/bash' > declang-android/bin/android-clang
+          echo '# Android DeClang Wrapper' >> declang-android/bin/android-clang
+          echo 'export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"' >> declang-android/bin/android-clang
+          echo 'mkdir -p "$DECLANG_HOME"' >> declang-android/bin/android-clang
+          echo 'exec "$(dirname "$0")/clang" --target=aarch64-linux-android21 "$@"' >> declang-android/bin/android-clang
+          
+          chmod +x declang-android/bin/android-clang
+          
+          tar czf declang-android-v1.0.0.tar.gz declang-android/
+          echo "✅ Package created: $(du -h declang-android-v1.0.0.tar.gz | cut -f1)"
+        else
+          echo "❌ Release-v1.0.0 not found"
+          exit 1
+        fi
         
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: ollvm-toolchain
-        path: ollvm-toolchain.tar.gz
+        name: declang-android-v1.0.0
+        path: declang-android-v1.0.0.tar.gz
