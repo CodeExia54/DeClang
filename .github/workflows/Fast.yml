@@ -1,44 +1,102 @@
-name: Build DeClang with OLLVM
+name: Build DeClang Complete
 
 on: workflow_dispatch
 
 jobs:
   build-declang:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
-    - name: Checkout
+    - name: Checkout WITH ALL FILES
       uses: actions/checkout@v4
       with:
         repository: DeNA/DeClang
         ref: Android-v1.0.0
-        submodules: true
+        fetch-depth: 0  # GET ALL HISTORY, NOT SHALLOW
+        submodules: recursive  # GET ALL SUBMODULES
+        token: ${{ secrets.GITHUB_TOKEN }}  # NEED TOKEN FOR FULL ACCESS
         
-    - name: Install
+    - name: Verify All Files
+      run: |
+        echo "=== Checking if AntiHack folders exist ==="
+        ls -la
+        echo ""
+        echo "AntiHackOSS:"
+        ls -la AntiHackOSS/ 2>/dev/null || echo "Not found"
+        echo ""
+        echo "AntiHackDeNA:"
+        ls -la AntiHackDeNA/ 2>/dev/null || echo "Not found"
+        echo ""
+        echo "Cloning submodules manually if needed..."
+        git submodule update --init --recursive --depth 1
+        
+    - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build
-        
-    - name: Build Clang
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          python3 \
+          libtinfo5 \
+          libncurses5 \
+          zlib1g-dev \
+          libxml2-dev
+          
+    - name: Run Their Build Script (Should Work Now)
       run: |
-        cd llvm
-        mkdir build && cd build
+        echo "=== Running DeClang's build.sh ==="
+        cd script
+        bash build.sh
         
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DLLVM_ENABLE_PROJECTS="clang" \
-          -G "Ninja"
-        
-        ninja clang
-        
-    - name: Package
+    - name: Run Android Release Script
       run: |
-        mkdir -p declang/bin
-        cp llvm/build/bin/clang declang/bin/
-        tar czf declang.tar.gz declang/
+        echo "=== Creating Android Release ==="
+        cd script
         
-    - name: Upload
+        # Check if android_release.sh exists
+        if [ -f "android_release.sh" ]; then
+          VERSION="android-$(date +%Y%m%d-%H%M%S)"
+          bash android_release.sh "$VERSION"
+        else
+          echo "android_release.sh not found, checking tools/"
+          cd ../tools
+          ls -la
+          bash android_release.sh "android-build"
+        fi
+        
+    - name: Package Result
+      run: |
+        echo "=== Packaging ==="
+        
+        # Look for Release directory
+        RELEASE_DIR=$(find . -maxdepth 1 -name "Release-*" -type d | head -1)
+        
+        if [ -n "$RELEASE_DIR" ]; then
+          echo "Found release: $RELEASE_DIR"
+          
+          # Rename to .DeClang as per their instructions
+          mv "$RELEASE_DIR" .DeClang
+          
+          # Package
+          tar czf declang-complete.tar.gz .DeClang/
+          
+          echo "✅ Created: declang-complete.tar.gz"
+        else
+          echo "❌ No release directory found"
+          echo "Checking build directory..."
+          if [ -d "build" ]; then
+            mkdir -p declang/bin
+            find build -name "clang" -type f -executable -exec cp {} declang/bin/ \;
+            tar czf declang-bin.tar.gz declang/
+          fi
+        fi
+        
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: declang
-        path: declang.tar.gz
+        name: declang-complete
+        path: |
+          declang-complete.tar.gz
+          declang-bin.tar.gz 2>/dev/null || echo ""
+        retention-days: 30
