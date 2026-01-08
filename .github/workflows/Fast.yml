@@ -1,10 +1,10 @@
-name: Build DeClang Correctly
+name: Build DeClang with OLLVM
 
 on: workflow_dispatch
 
 jobs:
   build-declang:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     
     steps:
     - name: Checkout
@@ -12,58 +12,29 @@ jobs:
       with:
         repository: DeNA/DeClang
         ref: Android-v1.0.0
-        submodules: recursive
+        submodules: true
         
     - name: Install
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          cmake \
-          ninja-build \
-          python3 \
-          libtinfo5 \
-          libncurses5 \
-          zlib1g-dev
-          
-    - name: Build
+        sudo apt-get install -y cmake ninja-build
+        
+    - name: Build Clang
       run: |
-        echo "=== Building DeClang ==="
-        
-        # Go to the actual source directory
-        # DeClang has llvm/ as a subdirectory with the actual source
         cd llvm
+        mkdir build && cd build
         
-        # Build from llvm/ directory
-        mkdir -p build && cd build
-        
-        # Correct CMake configuration
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
           -DLLVM_ENABLE_PROJECTS="clang" \
-          -DLLVM_TARGETS_TO_BUILD="AArch64;ARM" \
-          -DLLVM_DEFAULT_TARGET_TRIPLE="aarch64-linux-android21" \
-          -DLLVM_INCLUDE_TESTS=OFF \
-          -DLLVM_INCLUDE_EXAMPLES=OFF \
           -G "Ninja"
         
-        # Build clang
         ninja clang
         
     - name: Package
       run: |
-        echo "=== Packaging ==="
-        
         mkdir -p declang/bin
-        
-        # Copy from correct location
-        if [ -f "llvm/build/bin/clang" ]; then
-          cp llvm/build/bin/clang declang/bin/
-          
-          # Try to find clang++
-          find llvm/build -name "clang++" -type f -exec cp {} declang/bin/ \; 2>/dev/null || true
-        fi
-        
+        cp llvm/build/bin/clang declang/bin/
         tar czf declang.tar.gz declang/
         
     - name: Upload
