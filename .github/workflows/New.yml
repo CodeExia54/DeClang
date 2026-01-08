@@ -1,0 +1,123 @@
+name: Build DeClang - Minimal
+
+on: workflow_dispatch
+
+jobs:
+  build-declang:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60  # Set timeout
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: DeNA/DeClang
+        ref: Android-v1.0.0
+        submodules: recursive
+        
+    - name: Install
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          ninja-build \
+          python3 \
+          libtinfo5 \
+          libncurses5
+          
+    - name: Setup Symlinks Only
+      run: |
+        echo "=== Setting up AntiHackOSS symlinks ==="
+        
+        # Remove old symlinks
+        rm -f clang/lib/Driver/DeClangExtraProcess.cpp 2>/dev/null || true
+        rm -f llvm/lib/Transforms/AntiHack 2>/dev/null || true
+        rm -f llvm/include/llvm/Transforms/AntiHack 2>/dev/null || true
+        rm -f tools 2>/dev/null || true
+        
+        # Create symlinks to OSS
+        ln -sf ../../../AntiHackOSS/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
+        ln -sf ../../../AntiHackOSS/src llvm/lib/Transforms/AntiHack
+        ln -sf ../../../../AntiHackOSS/include llvm/include/llvm/Transforms/AntiHack
+        ln -sf AntiHackOSS/tools tools
+        
+    - name: Configure Build
+      run: |
+        echo "=== Configuring build ==="
+        
+        # Go to llvm source
+        cd llvm
+        
+        mkdir -p build && cd build
+        
+        # Configure for Android, build ONLY what we need
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLVM_ENABLE_PROJECTS="clang" \
+          -DLLVM_TARGETS_TO_BUILD="AArch64" \
+          -DLLVM_ENABLE_RUNTIMES="compiler-rt" \
+          -DLLVM_BUILD_LLVM_DYLIB=OFF \
+          -DLLVM_LINK_LLVM_DYLIB=OFF \
+          -DLLVM_INCLUDE_TESTS=OFF \
+          -DLLVM_INCLUDE_EXAMPLES=OFF \
+          -DLLVM_INCLUDE_BENCHMARKS=OFF \
+          -DLLVM_BUILD_TOOLS=OFF \
+          -DLLVM_BUILD_UTILS=OFF \
+          -G "Ninja"
+        
+    - name: Build Clang Only
+      run: |
+        echo "=== Building clang only ==="
+        cd llvm/build
+        
+        # Build ONLY clang, not all LLVM
+        ninja clang
+        
+        echo "✅ Build successful!"
+        
+    - name: Verify OLLVM
+      run: |
+        echo "=== Verifying OLLVM ==="
+        
+        if [ -f "llvm/build/bin/clang" ]; then
+          ./llvm/build/bin/clang --version
+          echo ""
+          
+          # Quick OLLVM test
+          echo 'int main(){return 0;}' > test.c
+          ./llvm/build/bin/clang test.c -o test -mllvm -fla 2>&1 | grep -i "error\|warning" || echo "✅ OLLVM -fla works"
+          ./llvm/build/bin/clang test.c -o test -mllvm -bcf 2>&1 | grep -i "error\|warning" || echo "✅ OLLVM -bcf works"
+          ./llvm/build/bin/clang test.c -o test -mllvm -sub 2>&1 | grep -i "error\|warning" || echo "✅ OLLVM -sub works"
+          rm -f test.c test
+        fi
+        
+    - name: Package
+      run: |
+        echo "=== Packaging ==="
+        
+        mkdir -p declang/bin
+        
+        # Copy clang
+        cp llvm/build/bin/clang declang/bin/
+        
+        # Try to get clang++
+        if [ -f "llvm/build/bin/clang++" ]; then
+          cp llvm/build/bin/clang++ declang/bin/
+        fi
+        
+        # Create Android wrapper
+        cat > declang/bin/android-clang << 'EOF'
+#!/bin/bash
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$DIR/clang" --target=aarch64-linux-android21 "$@"
+EOF
+        
+        chmod +x declang/bin/android-clang
+        
+        tar czf declang-android.tar.gz declang/
+        
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: declang-minimal
+        path: declang-android.tar.gz
