@@ -1,4 +1,4 @@
-name: Build DeClang Complete
+name: Build DeClang Public
 
 on: workflow_dispatch
 
@@ -7,65 +7,82 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-    - name: Checkout WITH ALL FILES
+    - name: Checkout
       uses: actions/checkout@v4
       with:
         repository: DeNA/DeClang
         ref: Android-v1.0.0
-        fetch-depth: 0  # GET ALL HISTORY, NOT SHALLOW
-        submodules: recursive  # GET ALL SUBMODULES
-        token: ${{ secrets.GITHUB_TOKEN }}  # NEED TOKEN FOR FULL ACCESS
+        submodules: recursive
+        fetch-depth: 0
         
-    - name: Verify All Files
+    - name: Verify Open Source Version Exists
       run: |
-        echo "=== Checking if AntiHack folders exist ==="
+        echo "=== Checking for AntiHackOSS ==="
         ls -la
         echo ""
-        echo "AntiHackOSS:"
-        ls -la AntiHackOSS/ 2>/dev/null || echo "Not found"
-        echo ""
-        echo "AntiHackDeNA:"
-        ls -la AntiHackDeNA/ 2>/dev/null || echo "Not found"
-        echo ""
-        echo "Cloning submodules manually if needed..."
-        git submodule update --init --recursive --depth 1
         
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          cmake \
-          ninja-build \
-          python3 \
-          libtinfo5 \
-          libncurses5 \
-          zlib1g-dev \
-          libxml2-dev
-          
-    - name: Run Their Build Script (Should Work Now)
-      run: |
-        echo "=== Running DeClang's build.sh ==="
-        cd script
-        bash build.sh
-        
-    - name: Run Android Release Script
-      run: |
-        echo "=== Creating Android Release ==="
-        cd script
-        
-        # Check if android_release.sh exists
-        if [ -f "android_release.sh" ]; then
-          VERSION="android-$(date +%Y%m%d-%H%M%S)"
-          bash android_release.sh "$VERSION"
+        if [ -d "AntiHackOSS" ]; then
+          echo "✅ Found AntiHackOSS (Open Source)"
+          ls -la AntiHackOSS/
         else
-          echo "android_release.sh not found, checking tools/"
-          cd ../tools
-          ls -la
-          bash android_release.sh "android-build"
+          echo "❌ AntiHackOSS not found!"
+          echo "Available directories:"
+          find . -maxdepth 1 -type d | head -20
+          exit 1
         fi
         
-    - name: Package Result
+    - name: Setup Symlinks for OSS Version
+      run: |
+        echo "=== Setting up OSS symlinks ==="
+        
+        # Remove any existing symlinks
+        rm -f clang/lib/Driver/DeClangExtraProcess.cpp 2>/dev/null || true
+        rm -f llvm/lib/Transforms/AntiHack 2>/dev/null || true
+        rm -f llvm/include/llvm/Transforms/AntiHack 2>/dev/null || true
+        rm -f tools 2>/dev/null || true
+        
+        # Create symlinks to OSS version
+        ln -sf ../../../AntiHackOSS/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
+        ln -sf ../../../AntiHackOSS/src llvm/lib/Transforms/AntiHack
+        ln -sf ../../../../AntiHackOSS/include llvm/include/llvm/Transforms/AntiHack
+        ln -sf AntiHackOSS/tools tools
+        
+        echo "✅ Symlinks created"
+        
+    - name: Build
+      run: |
+        echo "=== Building DeClang OSS ==="
+        
+        mkdir -p build
+        cd build
+        
+        # Build configuration (from build.sh)
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLVM_ENABLE_PROJECTS=clang \
+          -DLLVM_ENABLE_DUMP=ON \
+          -G "Unix Makefiles" ../llvm
+        
+        # Build (like build.sh does)
+        make llvm-headers
+        make -j$(nproc)
+        
+    - name: Create Android Release
+      run: |
+        echo "=== Creating Android Release ==="
+        
+        # Check if tools/android_release.sh exists
+        if [ -f "tools/android_release.sh" ]; then
+          echo "Running android_release.sh..."
+          cd tools
+          bash android_release.sh "android-oss-$(date +%Y%m%d)"
+        else
+          echo "tools/android_release.sh not found, checking script/"
+          cd script
+          bash android_release.sh "android-oss-$(date +%Y%m%d)"
+        fi
+        
+    - name: Package
       run: |
         echo "=== Packaging ==="
         
@@ -73,30 +90,29 @@ jobs:
         RELEASE_DIR=$(find . -maxdepth 1 -name "Release-*" -type d | head -1)
         
         if [ -n "$RELEASE_DIR" ]; then
-          echo "Found release: $RELEASE_DIR"
+          echo "Found: $RELEASE_DIR"
           
-          # Rename to .DeClang as per their instructions
-          mv "$RELEASE_DIR" .DeClang
+          # Package the release
+          tar czf declang-oss-android.tar.gz "$RELEASE_DIR"/
           
-          # Package
-          tar czf declang-complete.tar.gz .DeClang/
-          
-          echo "✅ Created: declang-complete.tar.gz"
+          # Also create a simple toolchain
+          mkdir -p declang-toolchain/bin
+          cp "$RELEASE_DIR"/bin/clang declang-toolchain/bin/ 2>/dev/null || true
+          cp "$RELEASE_DIR"/bin/clang++ declang-toolchain/bin/ 2>/dev/null || true
+          tar czf declang-toolchain.tar.gz declang-toolchain/
         else
-          echo "❌ No release directory found"
-          echo "Checking build directory..."
-          if [ -d "build" ]; then
-            mkdir -p declang/bin
-            find build -name "clang" -type f -executable -exec cp {} declang/bin/ \;
-            tar czf declang-bin.tar.gz declang/
-          fi
+          echo "No Release directory, checking build/bin..."
+          mkdir -p declang-toolchain/bin
+          find build -name "clang" -type f -executable -exec cp {} declang-toolchain/bin/ \;
+          find build -name "clang++" -type f -executable -exec cp {} declang-toolchain/bin/ \;
+          tar czf declang-toolchain.tar.gz declang-toolchain/
         fi
         
-    - name: Upload Artifact
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: declang-complete
+        name: declang-oss
         path: |
-          declang-complete.tar.gz
-          declang-bin.tar.gz 2>/dev/null || echo ""
-        retention-days: 30
+          declang-oss-android.tar.gz
+          declang-toolchain.tar.gz
+          build/bin/clang 2>/dev/null || echo ""
