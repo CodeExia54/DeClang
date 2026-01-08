@@ -1,0 +1,54 @@
+name: Build DeClang - Clean
+
+on: workflow_dispatch
+
+jobs:
+  build-declang:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: DeNA/DeClang
+        ref: Android-v1.0.0
+        submodules: recursive
+        
+    - name: Install
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          git \
+          python3 \
+          libtinfo5 \
+          libncurses5
+          
+    - name: Build
+      run: |
+        echo "Building..."
+        cd llvm
+        mkdir build && cd build
+        
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLVM_ENABLE_PROJECTS="clang" \
+          -DLLVM_TARGETS_TO_BUILD="AArch64" \
+          -G "Ninja"
+        
+        ninja clang
+        
+    - name: Package
+      run: |
+        mkdir -p declang/bin
+        cp llvm/build/bin/clang declang/bin/
+        
+        tar czf declang.tar.gz declang/
+        
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: declang
+        path: declang.tar.gz
