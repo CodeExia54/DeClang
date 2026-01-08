@@ -1,9 +1,9 @@
-name: Build Clang for Android ARM64
+name: Build Clang with OLLVM for Android
 
 on: workflow_dispatch
 
 jobs:
-  build-clang-android:
+  build-clang:
     runs-on: ubuntu-22.04
     
     steps:
@@ -23,16 +23,18 @@ jobs:
           python3 \
           libtinfo5 \
           libncurses5
-        
-    - name: Setup AntiHackOSS Symlinks
+          
+    - name: Setup OLLVM Symlinks
       run: |
-        echo "=== Setting up OLLVM symlinks ==="
+        echo "=== Setting up OLLVM ==="
         
+        # Remove old symlinks
         rm -f clang/lib/Driver/DeClangExtraProcess.cpp 2>/dev/null || true
         rm -f llvm/lib/Transforms/AntiHack 2>/dev/null || true
         rm -f llvm/include/llvm/Transforms/AntiHack 2>/dev/null || true
         rm -f tools 2>/dev/null || true
         
+        # Link to AntiHackOSS (OLLVM)
         ln -sf ../../../AntiHackOSS/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
         ln -sf ../../../AntiHackOSS/src llvm/lib/Transforms/AntiHack
         ln -sf ../../../../AntiHackOSS/include llvm/include/llvm/Transforms/AntiHack
@@ -40,84 +42,73 @@ jobs:
         
     - name: Build Clang Only
       run: |
-        echo "=== Building clang for Android ARM64 ==="
+        echo "=== Building clang with OLLVM ==="
         
+        # Go to llvm source directory
         cd llvm
-        mkdir -p build && cd build
         
+        # Clean build
+        rm -rf build && mkdir build
+        cd build
+        
+        # Configure for Android, build only clang
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
           -DLLVM_ENABLE_PROJECTS="clang" \
           -DLLVM_TARGETS_TO_BUILD="AArch64" \
           -DLLVM_DEFAULT_TARGET_TRIPLE="aarch64-linux-android21" \
-          -DLLVM_ENABLE_RUNTIMES="compiler-rt" \
           -DLLVM_INCLUDE_TESTS=OFF \
           -DLLVM_INCLUDE_EXAMPLES=OFF \
           -G "Ninja"
         
+        # Build ONLY clang
         ninja clang
         
         echo "✅ Clang build complete!"
         
-    - name: Test Android Support
+    - name: Test OLLVM
       run: |
-        echo "=== Testing Android ARM64 support ==="
+        echo "=== Testing OLLVM ==="
         
         if [ -f "llvm/build/bin/clang" ]; then
-          CLANG_BIN="llvm/build/bin/clang"
-          
-          echo "Clang version:"
-          $CLANG_BIN --version
-          
+          ./llvm/build/bin/clang --version
           echo ""
-          echo "Testing Android ARM64 target:"
-          $CLANG_BIN --target=aarch64-linux-android21 --version 2>&1 | head -3 && \
-            echo "✅ Android ARM64 supported" || echo "❌ Android ARM64 not supported"
-            
-          echo ""
-          echo "Testing OLLVM flags:"
-          echo 'int main(){return 0;}' | \
-            $CLANG_BIN -x c -c - -o /dev/null \
-            -mllvm -fla \
-            -mllvm -bcf \
-            -mllvm -sub 2>&1 | grep -i "error" || \
-            echo "✅ OLLVM flags accepted"
-        else
-          echo "❌ Clang binary not found"
+          
+          # Test OLLVM flags
+          echo 'int main(){return 0;}' > test.c
+          
+          echo "Testing -mllvm -fla:"
+          ./llvm/build/bin/clang test.c -o test -mllvm -fla 2>&1 | grep -i "error" || echo "✅ -fla works"
+          
+          echo "Testing -mllvm -bcf:"
+          ./llvm/build/bin/clang test.c -o test -mllvm -bcf 2>&1 | grep -i "error" || echo "✅ -bcf works"
+          
+          echo "Testing -mllvm -sub:"
+          ./llvm/build/bin/clang test.c -o test -mllvm -sub 2>&1 | grep -i "error" || echo "✅ -sub works"
+          
+          rm -f test.c test
         fi
         
-    - name: Create Android Toolchain
+    - name: Package
       run: |
-        echo "=== Creating Android toolchain ==="
+        echo "=== Packaging clang ==="
         
-        mkdir -p android-toolchain/bin
+        mkdir -p clang-ollvm/bin
         
-        if [ -f "llvm/build/bin/clang" ]; then
-          cp llvm/build/bin/clang android-toolchain/bin/
-          
-          if [ -f "llvm/build/bin/clang++" ]; then
-            cp llvm/build/bin/clang++ android-toolchain/bin/
-          fi
-          
-          cat > android-toolchain/bin/android-clang << 'EOF'
-#!/bin/bash
-# Android ARM64 compiler wrapper
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$DIR/clang" --target=aarch64-linux-android21 "$@"
-EOF
-          
-          chmod +x android-toolchain/bin/android-clang
-          
-          tar czf declang-android-arm64.tar.gz android-toolchain/
-          echo "✅ Package created: declang-android-arm64.tar.gz"
-        else
-          echo "❌ Clang binary not found for packaging"
-          exit 1
-        fi
+        # Copy clang
+        cp llvm/build/bin/clang clang-ollvm/bin/
         
-    - name: Upload Artifact
+        # Simple Android wrapper
+        echo '#!/bin/bash' > clang-ollvm/bin/android-clang
+        echo 'exec "$(dirname "$0")/clang" --target=aarch64-linux-android21 "$@"' >> clang-ollvm/bin/android-clang
+        chmod +x clang-ollvm/bin/android-clang
+        
+        # Package
+        tar czf clang-ollvm-android.tar.gz clang-ollvm/
+        echo "✅ Package created: clang-ollvm-android.tar.gz"
+        
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: clang-android-arm64
-        path: declang-android-arm64.tar.gz
-        retention-days: 30
+        name: clang-ollvm-android
+        path: clang-ollvm-android.tar.gz
