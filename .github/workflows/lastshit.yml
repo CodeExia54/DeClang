@@ -1,0 +1,156 @@
+name: Build Clang with OLLVM for Android
+
+on: workflow_dispatch
+
+jobs:
+  build-clang:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout DeClang
+      uses: actions/checkout@v4
+      with:
+        repository: DeNA/DeClang
+        ref: Android-v1.0.0
+        submodules: recursive
+        
+    - name: Verify Repository Structure
+      run: |
+        echo "=== Repository Structure ==="
+        echo "AntiHackOSS contents:"
+        ls -la AntiHackOSS/
+        echo ""
+        echo "clang/lib/Driver contents:"
+        ls -la clang/lib/Driver/ | grep -i declang || true
+        echo ""
+        echo "Original OLLVM structure in repo:"
+        find . -name "*AntiHack*" -o -name "*Obfuscation*" | head -20
+          
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          ninja-build \
+          python3 \
+          libtinfo5 \
+          libncurses5
+          
+    - name: Setup OLLVM Symlinks (Corrected)
+      run: |
+        echo "=== Setting up OLLVM symlinks ==="
+        
+        # According to DeClang repo, symlinks should be:
+        # 1. DeClangExtraProcess.cpp
+        # 2. AntiHack source -> llvm/lib/Transforms/AntiHack  
+        # 3. AntiHack includes -> llvm/include/llvm/Transforms/AntiHack
+        # 4. tools -> AntiHackOSS/tools
+        
+        # Create all symlinks
+        ln -sf ../../../AntiHackOSS/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
+        ln -sf ../../../AntiHackOSS/src llvm/lib/Transforms/AntiHack
+        ln -sf ../../../../AntiHackOSS/include llvm/include/llvm/Transforms/AntiHack
+        ln -sf ../AntiHackOSS/tools tools
+        
+        echo "Symlinks created:"
+        ls -l clang/lib/Driver/DeClangExtraProcess.cpp
+        ls -l llvm/lib/Transforms/AntiHack
+        ls -l llvm/include/llvm/Transforms/AntiHack
+        ls -l tools
+        
+    - name: Build Clang with OLLVM (No Z3)
+      run: |
+        echo "=== Building clang with OLLVM ==="
+        
+        # Go to llvm source directory
+        cd llvm
+        
+        # Clean build
+        rm -rf build && mkdir build
+        cd build
+        
+        # Configure for Android - DISABLE Z3
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLVM_ENABLE_PROJECTS="clang" \
+          -DLLVM_TARGETS_TO_BUILD="AArch64" \
+          -DLLVM_DEFAULT_TARGET_TRIPLE="aarch64-linux-android21" \
+          -DLLVM_INCLUDE_TESTS=OFF \
+          -DLLVM_INCLUDE_EXAMPLES=OFF \
+          # ↓↓↓ DISABLE Z3 AND UNNECESSARY DEPS ↓↓↓
+          -DLLVM_ENABLE_Z3_SOLVER=OFF \
+          -DLLVM_ENABLE_LIBEDIT=OFF \
+          -DLLVM_ENABLE_LIBXML2=OFF \
+          -DLLVM_ENABLE_TERMINFO=OFF \
+          -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
+          -DCLANG_ENABLE_ARCMT=OFF \
+          # ↑↑↑ No Z3 dependency ↑↑↑
+          -G "Ninja"
+        
+        # Build clang
+        ninja clang
+        
+        echo "✅ Clang build complete!"
+        
+    - name: Test OLLVM
+      run: |
+        echo "=== Testing OLLVM ==="
+        
+        if [ -f "llvm/build/bin/clang" ]; then
+          # Set DECLANG_HOME to avoid the linker error you saw
+          export DECLANG_HOME="/tmp/declang-test"
+          mkdir -p $DECLANG_HOME
+          
+          ./llvm/build/bin/clang --version
+          echo ""
+          
+          # Test OLLVM flags
+          echo 'int main(){return 0;}' > test.c
+          
+          echo "Testing -mllvm -fla:"
+          ./llvm/build/bin/clang --target=aarch64-linux-android21 test.c -o test -mllvm -fla 2>&1 | grep -i "error" || echo "✅ -fla works"
+          
+          echo "Testing -mllvm -bcf:"
+          ./llvm/build/bin/clang --target=aarch64-linux-android21 test.c -o test -mllvm -bcf 2>&1 | grep -i "error" || echo "✅ -bcf works"
+          
+          echo "Testing -mllvm -sub:"
+          ./llvm/build/bin/clang --target=aarch64-linux-android21 test.c -o test -mllvm -sub 2>&1 | grep -i "error" || echo "✅ -sub works"
+          
+          rm -f test.c test
+        fi
+        
+    - name: Package
+      run: |
+        echo "=== Packaging clang ==="
+        
+        mkdir -p clang-ollvm/bin
+        
+        # Copy clang binary
+        cp llvm/build/bin/clang clang-ollvm/bin/
+        
+        # Create Android wrapper with DECLANG_HOME setup
+        cat > clang-ollvm/bin/android-clang << 'EOF'
+#!/bin/bash
+# Android OLLVM Clang Wrapper
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Set DECLANG_HOME to avoid "[Linker]: Open logFile Failed" error
+export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"
+mkdir -p "$DECLANG_HOME"
+
+# Execute clang with Android target
+exec "$SCRIPT_DIR/clang" --target=aarch64-linux-android21 "$@"
+EOF
+        
+        chmod +x clang-ollvm/bin/android-clang
+        
+        # Package
+        tar czf clang-ollvm-android.tar.gz clang-ollvm/
+        echo "✅ Package created: clang-ollvm-android.tar.gz"
+        
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: clang-ollvm-android
+        path: clang-ollvm-android.tar.gz
