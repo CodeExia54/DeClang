@@ -4,7 +4,7 @@ on: workflow_dispatch
 
 jobs:
   build-clang-android:
-    runs-on: ubuntu-22.04  # Use 22.04 for better compatibility
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout DeClang
@@ -12,9 +12,9 @@ jobs:
       with:
         repository: DeNA/DeClang
         ref: Android-v1.0.0
-        submodules: recursive  # CRITICAL!
+        submodules: recursive
         
-    - name: Install Minimal Dependencies
+    - name: Install Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -28,13 +28,11 @@ jobs:
       run: |
         echo "=== Setting up OLLVM symlinks ==="
         
-        # Setup symlinks like build.sh does
         rm -f clang/lib/Driver/DeClangExtraProcess.cpp 2>/dev/null || true
         rm -f llvm/lib/Transforms/AntiHack 2>/dev/null || true
         rm -f llvm/include/llvm/Transforms/AntiHack 2>/dev/null || true
         rm -f tools 2>/dev/null || true
         
-        # Link to AntiHackOSS (open source OLLVM)
         ln -sf ../../../AntiHackOSS/clang/DeClangExtraProcess.cpp clang/lib/Driver/DeClangExtraProcess.cpp
         ln -sf ../../../AntiHackOSS/src llvm/lib/Transforms/AntiHack
         ln -sf ../../../../AntiHackOSS/include llvm/include/llvm/Transforms/AntiHack
@@ -44,11 +42,9 @@ jobs:
       run: |
         echo "=== Building clang for Android ARM64 ==="
         
-        # Build from llvm directory
         cd llvm
         mkdir -p build && cd build
         
-        # Configure for Android ARM64, build ONLY clang
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
           -DLLVM_ENABLE_PROJECTS="clang" \
@@ -59,7 +55,6 @@ jobs:
           -DLLVM_INCLUDE_EXAMPLES=OFF \
           -G "Ninja"
         
-        # Build ONLY clang (not all LLVM)
         ninja clang
         
         echo "✅ Clang build complete!"
@@ -100,12 +95,10 @@ jobs:
         if [ -f "llvm/build/bin/clang" ]; then
           cp llvm/build/bin/clang android-toolchain/bin/
           
-          # Try to get clang++
           if [ -f "llvm/build/bin/clang++" ]; then
             cp llvm/build/bin/clang++ android-toolchain/bin/
           fi
           
-          # Create Android wrapper
           cat > android-toolchain/bin/android-clang << 'EOF'
 #!/bin/bash
 # Android ARM64 compiler wrapper
@@ -115,7 +108,6 @@ EOF
           
           chmod +x android-toolchain/bin/android-clang
           
-          # Package
           tar czf declang-android-arm64.tar.gz android-toolchain/
           echo "✅ Package created: declang-android-arm64.tar.gz"
         else
