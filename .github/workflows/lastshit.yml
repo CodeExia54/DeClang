@@ -103,16 +103,14 @@ jobs:
         # Copy clang
         cp llvm/build/bin/clang clang-ollvm/bin/
         
-        # Android wrapper with DECLANG_HOME set
-        cat > clang-ollvm/bin/android-clang << 'EOF'
-#!/bin/bash
-# Set DECLANG_HOME to avoid linker error
-export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"
-mkdir -p "$DECLANG_HOME"
-
-# Execute with Android target
-exec "$(dirname "$0")/clang" --target=aarch64-linux-android21 "$@"
-EOF
+        # Android wrapper with DECLANG_HOME set - USING ECHO TO AVOID HEREDOC ISSUES
+        echo '#!/bin/bash' > clang-ollvm/bin/android-clang
+        echo '# Set DECLANG_HOME to avoid linker error' >> clang-ollvm/bin/android-clang
+        echo 'export DECLANG_HOME="${DECLANG_HOME:-$HOME/.DeClang}"' >> clang-ollvm/bin/android-clang
+        echo 'mkdir -p "$DECLANG_HOME"' >> clang-ollvm/bin/android-clang
+        echo '' >> clang-ollvm/bin/android-clang
+        echo '# Execute with Android target' >> clang-ollvm/bin/android-clang
+        echo 'exec "$(dirname "$0")/clang" --target=aarch64-linux-android21 "$@"' >> clang-ollvm/bin/android-clang
         
         chmod +x clang-ollvm/bin/android-clang
         
